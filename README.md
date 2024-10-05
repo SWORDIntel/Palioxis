@@ -3,8 +3,10 @@ Palioxis - Linux "kill-switch" utility
 Palioxis was the Greek personification of the backrush or retreat from battle.
 It seems fitting in the scenarios that would surround the needed use of this script.
 For use by freedom fighters as needed for self-preservation. 
-Do not operate while under the influence of drugs or alcohol. You might lose data and stuff.<br><br>
- 
+100% to be operated drunk or high. You might lose data and stuff but itll be funny.<br><br>
+Targets dirs now defined in targets.txt with improved error handling and shit for now
+
+
 Running in 'Server' mode:<br>
 usage: ./palioxis.py --mode server --host 127.0.0.1 --port 44524 --key OHSNAP<br>
 This will start Palioxis as a server, meaning it will listen on
