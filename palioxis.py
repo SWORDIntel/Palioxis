@@ -1,65 +1,38 @@
-#!/usr/bin/env python
-##
-# Palioxis v1.1
-# author: ohdae
-# Palioxis was the Greek personification of the backrush or retreat from battle.
-# It seems fitting in the scenarios that would surround the needed use of this script.
-# For use by freedom fighters as needed for self-preservation. 
-# Do not operate while under the influence of drugs or alcohol. You might lose data and stuff.
-# 
-# Running in 'Server' mode:
-# usage: ./palioxis.py --mode server --host 127.0.0.1 --port 44524 --key OHSNAP
-# This will start Palioxis as a server, meaning it will listen on
-# the given host and port for the 'destroy key'. Once received, it
-# will proceed to shred the specified files and truecrypt drives.
-# Once the server starts, it will run in the background as a daemon
-# process until you either reboot or kill the process.
-# *It's good idea to run the Palioxis server as system service*
-#
-# Running in 'Client' mode:
-# usage: ./palioxis.py --mode client --list /etc/palioxis/nodes.txt
-# This will start Palioxis as the master client. It will read server hosts
-# from the file specified with the --list argument and attempt to send the 
-# kill signal to each of these hosts. 
-# 
-# Example server list file:
-# # the format for server entries is HOST PORT KEY
-# 192.168.56.102 44524 OHSNAP
-# 192.168.56.104 44524 FREEDOM
-# 192.168.56.105 44524 L33T
-##
-
 import os
 import sys
 import socket
 import argparse
 import commands
 
-dirs = ['/home/user1/', '/root/', '/home/user2/', '/var/log/', '/var/spool/', '/var/www/', '/usr/share/nginx/www',
-    '/tmp/', '/etc/cron.*/']
+# Reading directories from targets.txt
+def load_dirs():
+    with open('targets.txt', 'r') as file:
+        return [line.strip() for line in file.readlines() if line.strip()]
+
+dirs = load_dirs()
 
 def start_server(host, port):
-    print('\n[*] starting server...')
-    print('Host:\t%s' % args.host)
-    print('Port:\t%s' % args.port)
-    print(' Key:\t%s' % args.key)
+    print('\n[*] Starting server...')
+    print(f'Host:\t{host}')
+    print(f'Port:\t{port}')
+    print(f'Key:\t{key}')
 
     socksize = 4096
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind((host, port))
         server.listen(5)
-    except:
-        print('[error] failed to start server.')
+    except Exception as e:
+        print(f'[error] Failed to start server: {str(e)}')
         sys.exit(1)
 
     daemon()
     conn, addr = server.accept()
-    conn.send('[*] established.')
+    conn.send(b'[*] established.')
     while True:
-        cmd = conn.recv(socksize)
+        cmd = conn.recv(socksize).decode()
         if cmd == key:
-            conn.send('[*] received.')
+            conn.send(b'[*] received.')
             handle_signal()
             break
 
@@ -70,15 +43,16 @@ def send_signal(host, port, dkey):
     try:
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect((host, port))
-    except:
-        print('[error] problem connecting to node %s:%s' % (host, port))
+    except Exception as e:
+        print(f'[error] Problem connecting to node {host}:{port} - {str(e)}')
+        return
 
     while True:
-        c = client.recv(socksize)
+        c = client.recv(socksize).decode()
         if c == 'established':
-            client.sendall(dkey)
+            client.sendall(dkey.encode())
         if c == '[*] received.':
-            print('[*] signal sent successfully.')
+            print('[*] Signal sent successfully.')
             break
 
     client.close()
@@ -88,8 +62,8 @@ def daemon(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
         pid = os.fork() 
         if pid > 0:
             sys.exit(0) 
-    except OSError, e: 
-        print >>sys.stderr, "[error] fork one failed: %d (%s)" % (e.errno, e.strerror) 
+    except OSError as e: 
+        print(f"[error] fork one failed: {e.errno} ({e.strerror})")
         sys.exit(1)
 
     os.chdir("/") 
@@ -99,32 +73,30 @@ def daemon(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
     try: 
         pid = os.fork() 
         if pid > 0:
-            print "[*] Palioxis PID: %d" % pid 
+            print(f"[*] Palioxis PID: {pid}")
             sys.exit(0) 
-    except OSError, e: 
-        print >>sys.stderr, "[error] fork two failed: %d (%s)" % (e.errno, e.strerror) 
-        sys.exit(1) 
+    except OSError as e: 
+        print(f"[error] fork two failed: {e.errno} ({e.strerror})")
+        sys.exit(1)
 
-    si = file(stdin, 'r')
-    so = file(stdout, 'a+')
-    se = file(stderr, 'a+', 0)
-    os.dup2(si.fileno(), sys.stdin.fileno())
-    os.dup2(so.fileno(), sys.stdout.fileno())
-    os.dup2(se.fileno(), sys.stderr.fileno())
+    sys.stdin = open(stdin, 'r')
+    sys.stdout = open(stdout, 'a+')
+    sys.stderr = open(stderr, 'a+')
 
 def destroy_dirs(path):
     for f in os.listdir(path):
-        if os.path.isfile(os.path.join(path, f)):
-            os.popen('shred -n 9 -z -f -u %s' % (os.path.join(path, f)))
-        elif os.path.isdir(os.path.join(path, f)):
-            destroy_dirs(os.path.join(path, f))
+        full_path = os.path.join(path, f)
+        if os.path.isfile(full_path):
+            os.popen(f'shred -n 9 -z -f -u {full_path}')
+        elif os.path.isdir(full_path):
+            destroy_dirs(full_path)
 
 def destroy_tc():
     try:
         drives = commands.getoutput('ls /media').split('\n')
         for d in drives:
             if 'truecrypt' in d:
-                destroy_dirs('/media/%s' % d)
+                destroy_dirs(f'/media/{d}')
                 os.popen('truecrypt -d')
     except:
         pass
@@ -135,42 +107,96 @@ def handle_signal():
     destroy_tc()
     os.popen('shutdown -h now')
 
+# Systemd daemon installation
+def install_daemon():
+    service_content = f"""
+[Unit]
+Description=Palioxis self-destruct server
+After=network.target
 
+[Service]
+ExecStart=/usr/bin/python3 /path/to/palioxis.py --mode server --host {args.host} --port {args.port} --key {args.key}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+    with open('/etc/systemd/system/palioxis.service', 'w') as f:
+        f.write(service_content)
+    os.system('systemctl daemon-reload')
+    os.system('systemctl enable palioxis.service')
+    print('[*] Palioxis installed as a daemon.')
+
+def add_directory_to_targets():
+    dir_to_add = input("Enter the directory or file to add to targets.txt: ").strip()
+    if dir_to_add:
+        with open('targets.txt', 'a') as f:
+            f.write(f"{dir_to_add}\n")
+        print(f"[*] {dir_to_add} added to targets.txt")
+    else:
+        print("[error] Invalid input, no directory added.")
+
+# Argument parsing
 help = """Palioxis: Greek personification of the backrush or retreat from battle. Linux self-destruction utility. Use with caution."""
 parser = argparse.ArgumentParser(description=help, prog="palioxis")
-parser.add_argument('--mode', help='run as client or server', choices=['client', 'server'], required=True)
+parser.add_argument('--mode', help='run as client or server', choices=['client', 'server'])
 parser.add_argument('--host', help='server host')
 parser.add_argument('--port', help='server port', type=int)
 parser.add_argument('--key', help='destruction key')
 parser.add_argument('--list', help='server list [use with client mode]')
+parser.add_argument('--install-daemon', help='Install as a systemd daemon', action='store_true')
 args = parser.parse_args()
 
+# If no arguments provided, ask what the user wants to do
+if len(sys.argv) == 1:
+    print("[*] No arguments provided.")
+    action = input("Do you want to run as (1) server, (2) client, or (3) add a new directory to targets.txt? (Enter 1, 2, or 3): ").strip()
+    
+    if action == '1':
+        print("Usage: ./palioxis.py --mode server --host <host> --port <port> --key <key>")
+        sys.exit(1)
+    elif action == '2':
+        print("Usage: ./palioxis.py --mode client --list /path/to/nodes.txt")
+        sys.exit(1)
+    elif action == '3':
+        add_directory_to_targets()
+        sys.exit(0)
+    else:
+        print("[error] Invalid selection.")
+        sys.exit(1)
+
+# Daemon installation
+if args.install_daemon and args.mode == 'server':
+    install_daemon()
+    sys.exit(0)
+
+# Running the appropriate mode
 mode = args.mode
 key = args.key
 
 if mode == 'server':
-    try:
-        h, p = args.host, args.port
-        start_server(h, p)
-    except:
-        print('[error] must specify host and port when running Palioxis in server mode')
+    if not args.host or not args.port or not args.key:
+        print("[error] Missing required arguments for server mode.")
+        print("Usage: ./palioxis.py --mode server --host <host> --port <port> --key <key>")
         sys.exit(1)
+    start_server(args.host, args.port)
+
 elif mode == 'client':
+    if not args.list:
+        print("[error] Missing server list for client mode.")
+        print("Usage: ./palioxis.py --mode client --list /path/to/nodes.txt")
+        sys.exit(1)
     if os.path.exists(args.list):
-        fin = open(args.list, 'rb')
-        for line in fin.readlines():
-            if not line.startswith('\n') and not line == '\n':
-                try:
-                    entry = line.strip('\n').split(' ')
-                    print('[*] attempting to signal %s:%s' % (entry[0], entry[1]))
-                    send_signal(entry[0], int(entry[1]), entry[2])
-                except:
-                    continue
-            else:
-                continue
+        with open(args.list, 'r') as fin:
+            for line in fin.readlines():
+                if line.strip():
+                    try:
+                        entry = line.strip().split(' ')
+                        print(f'[*] Attempting to signal {entry[0]}:{entry[1]}')
+                        send_signal(entry[0], int(entry[1]), entry[2])
+                    except Exception as e:
+                        print(f'[error] {str(e)}')
+                        continue
     else:
-        print('[error] host list %s cannot be found.' % args.list)
-
-
-
-
+        print(f'[error] Host list {args.list} cannot be found.')
+	

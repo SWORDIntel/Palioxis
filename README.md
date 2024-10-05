@@ -1,11 +1,19 @@
-Palioxis - Linux "kill-switch" utility
+Palioxis - Linux "kill-switch" utility aka the 2024 "DELETE MY BROWSER HISTORY WHEN I DIE"
 ========
-Palioxis was the Greek personification of the backrush or retreat from battle.
+Palioxis was the Greek personification of the backrush or retreat from battle,and this little thing salts the earth behind you.
 It seems fitting in the scenarios that would surround the needed use of this script.
-For use by freedom fighters as needed for self-preservation. 
-100% to be operated drunk or high. You might lose data and stuff but itll be funny.<br><br>
-Targets dirs now defined in targets.txt with improved error handling and shit for now
 
+For use by freedom fighters as needed for self-preservation,or yknow if you wanna delete your collection of stolen federal document.
+
+100% to be operated drunk or high. 
+You might lose data and stuff but itll be funny.
+
+2024 Updates:
+Targets dirs now defined in targets.txt with improved error handling and shit for now
+Added option to install itself as a systemd
+Suggest arguments based upon the mode if run with no args
+no args also has option to add a new path/file to self destruction:
+<br>Do you want to run as (1) server, (2) client, or (3) add a new directory to targets.txt? (Enter 1, 2, or 3): <br>
 
 Running in 'Server' mode:<br>
 usage: ./palioxis.py --mode server --host 127.0.0.1 --port 44524 --key OHSNAP<br>
