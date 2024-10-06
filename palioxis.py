@@ -4,7 +4,7 @@ import socket
 import argparse
 import commands
 
-# Reading directories from targets.txt
+# Reading directories from targets.txt	
 def load_dirs():
     with open('targets.txt', 'r') as file:
         return [line.strip() for line in file.readlines() if line.strip()]
