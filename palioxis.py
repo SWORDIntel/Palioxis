@@ -1,15 +1,22 @@
 import os
 import sys
 import socket
+import subprocess
 import argparse
-import commands
 
-# Reading directories from targets.txt	
+# Reading directories from targets.txt
 def load_dirs():
-    with open('targets.txt', 'r') as file:
-        return [line.strip() for line in file.readlines() if line.strip()]
+    try:
+        with open('targets.txt', 'r') as file:
+            return [line.strip() for line in file.readlines() if line.strip()]
+    except FileNotFoundError:
+        print("[error] targets.txt not found.")
+        sys.exit(1)
 
 dirs = load_dirs()
+
+# Global key initialization
+key = None
 
 def start_server(host, port):
     print('\n[*] Starting server...')
@@ -58,24 +65,24 @@ def send_signal(host, port, dkey):
     client.close()
 
 def daemon(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
-    try: 
-        pid = os.fork() 
+    try:
+        pid = os.fork()
         if pid > 0:
-            sys.exit(0) 
-    except OSError as e: 
+            sys.exit(0)
+    except OSError as e:
         print(f"[error] fork one failed: {e.errno} ({e.strerror})")
         sys.exit(1)
 
-    os.chdir("/") 
-    os.setsid() 
-    os.umask(0) 
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
 
-    try: 
-        pid = os.fork() 
+    try:
+        pid = os.fork()
         if pid > 0:
             print(f"[*] Palioxis PID: {pid}")
-            sys.exit(0) 
-    except OSError as e: 
+            sys.exit(0)
+    except OSError as e:
         print(f"[error] fork two failed: {e.errno} ({e.strerror})")
         sys.exit(1)
 
@@ -84,28 +91,33 @@ def daemon(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
     sys.stderr = open(stderr, 'a+')
 
 def destroy_dirs(path):
-    for f in os.listdir(path):
-        full_path = os.path.join(path, f)
-        if os.path.isfile(full_path):
-            os.popen(f'shred -n 9 -z -f -u {full_path}')
-        elif os.path.isdir(full_path):
-            destroy_dirs(full_path)
+    try:
+        for f in os.listdir(path):
+            full_path = os.path.join(path, f)
+            if os.path.isfile(full_path):
+                subprocess.run(['shred', '-n', '9', '-z', '-f', '-u', full_path], check=True)
+            elif os.path.isdir(full_path):
+                destroy_dirs(full_path)
+    except Exception as e:
+        print(f"[error] Failed to destroy files in {path}: {e}")
 
 def destroy_tc():
     try:
-        drives = commands.getoutput('ls /media').split('\n')
+        drives = subprocess.check_output('ls /media', shell=True).decode().split('\n')
         for d in drives:
             if 'truecrypt' in d:
                 destroy_dirs(f'/media/{d}')
-                os.popen('truecrypt -d')
-    except:
-        pass
+                subprocess.run(['truecrypt', '-d'], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[error] Truecrypt destruction failed: {e}")
+    except Exception as e:
+        print(f"[error] Failed to destroy TrueCrypt volumes: {e}")
 
 def handle_signal():
     for p in dirs:
         destroy_dirs(p)
     destroy_tc()
-    os.popen('shutdown -h now')
+    subprocess.run(['shutdown', '-h', 'now'], check=True)
 
 # Systemd daemon installation
 def install_daemon():
@@ -121,18 +133,24 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 """
-    with open('/etc/systemd/system/palioxis.service', 'w') as f:
-        f.write(service_content)
-    os.system('systemctl daemon-reload')
-    os.system('systemctl enable palioxis.service')
-    print('[*] Palioxis installed as a daemon.')
+    try:
+        with open('/etc/systemd/system/palioxis.service', 'w') as f:
+            f.write(service_content)
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+        subprocess.run(['systemctl', 'enable', 'palioxis.service'], check=True)
+        print('[*] Palioxis installed as a daemon.')
+    except Exception as e:
+        print(f"[error] Failed to install Palioxis as a daemon: {e}")
 
 def add_directory_to_targets():
     dir_to_add = input("Enter the directory or file to add to targets.txt: ").strip()
     if dir_to_add:
-        with open('targets.txt', 'a') as f:
-            f.write(f"{dir_to_add}\n")
-        print(f"[*] {dir_to_add} added to targets.txt")
+        try:
+            with open('targets.txt', 'a') as f:
+                f.write(f"{dir_to_add}\n")
+            print(f"[*] {dir_to_add} added to targets.txt")
+        except Exception as e:
+            print(f"[error] Failed to add directory: {e}")
     else:
         print("[error] Invalid input, no directory added.")
 
@@ -151,7 +169,7 @@ args = parser.parse_args()
 if len(sys.argv) == 1:
     print("[*] No arguments provided.")
     action = input("Do you want to run as (1) server, (2) client, or (3) add a new directory to targets.txt? (Enter 1, 2, or 3): ").strip()
-    
+
     if action == '1':
         print("Usage: ./palioxis.py --mode server --host <host> --port <port> --key <key>")
         sys.exit(1)
@@ -199,4 +217,3 @@ elif mode == 'client':
                         continue
     else:
         print(f'[error] Host list {args.list} cannot be found.')
-	
