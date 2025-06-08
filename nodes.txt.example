@@ -1,0 +1,6 @@
+# Palioxis nodes list example
+# Format: hostname/IP port key
+# Each line represents a server to send the self-destruct signal to
+localhost 8443 OHSNAP
+192.168.1.10 8443 SECURE_KEY_1
+192.168.1.11 8443 SECURE_KEY_2

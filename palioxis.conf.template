@@ -1,0 +1,37 @@
+[Server]
+# Server host and port configuration
+host = 0.0.0.0
+port = 8443
+# Self-destruct key
+key = OHSNAP
+
+[Certificates]
+# Certificate files for mTLS
+ca_cert = palioxis-ca.crt
+server_cert = palioxis-server.crt
+server_key = palioxis-server.key
+client_cert = palioxis-client.crt
+client_key = palioxis-client.key
+
+[Destroyer]
+# Destroyer module to use: shred, fast, wipe, or windows
+module = shred
+# Custom options for the destroyer modules
+shred_passes = 9
+fast_passes = 3
+
+[Daemon]
+# Logging configuration
+log_file = palioxis.log
+log_level = INFO
+
+[Targets]
+# List of directories to destroy (one per line)
+directories = 
+    /path/to/sensitive/data1
+    /path/to/sensitive/data2
+    /path/to/truecrypt/volume
+
+[Client]
+# Path to nodes list file for client mode
+nodes_list = nodes.txt

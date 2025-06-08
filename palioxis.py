@@ -1,219 +1,403 @@
+#!/usr/bin/env python3
+# PROJECT PALIOXIS: Main Script
+# This script integrates all Palioxis components and provides the command-line interface
+
 import os
 import sys
-import socket
-import subprocess
 import argparse
+import logging
+import configparser
+import traceback
+from typing import Dict, List, Any, Optional
 
-# Reading directories from targets.txt
-def load_dirs():
-    try:
-        with open('targets.txt', 'r') as file:
-            return [line.strip() for line in file.readlines() if line.strip()]
-    except FileNotFoundError:
-        print("[error] targets.txt not found.")
-        sys.exit(1)
+# Check for required modules
+try:
+    import jwt
+    import daemon
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509 import load_pem_x509_certificate
+except ImportError as e:
+    print(f"[error] Required module not found: {e}")
+    print("[suggestion] Install required dependencies with: pip install pyjwt cryptography python-daemon configparser")
+    print("[suggestion] Consider using a virtual environment: python3 -m venv palioxis_env && source palioxis_env/bin/activate")
+    sys.exit(1)
 
-dirs = load_dirs()
+# Import local modules
+from config_manager import ConfigManager
+from destroyers import get_destroyer, BaseDestroyer
+from palioxis_server import PalioxisServer
+from palioxis_client import PalioxisClient
 
-# Global key initialization
-key = None
+# Set up logging
+def setup_logging(log_level='INFO', log_file=None):
+    """Configure the logging system"""
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    if log_file:
+        logging.basicConfig(level=numeric_level, format=log_format,
+                           filename=log_file, filemode='a')
+    else:
+        logging.basicConfig(level=numeric_level, format=log_format)
+    
+    # Add a console handler if logging to file
+    if log_file:
+        console = logging.StreamHandler()
+        console.setLevel(numeric_level)
+        formatter = logging.Formatter(log_format)
+        console.setFormatter(formatter)
+        logging.getLogger('').addHandler(console)
+        
+    return logging.getLogger('palioxis')
 
-def start_server(host, port):
-    print('\n[*] Starting server...')
-    print(f'Host:\t{host}')
-    print(f'Port:\t{port}')
-    print(f'Key:\t{key}')
 
-    socksize = 4096
-    try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind((host, port))
-        server.listen(5)
-    except Exception as e:
-        print(f'[error] Failed to start server: {str(e)}')
-        sys.exit(1)
-
-    daemon()
-    conn, addr = server.accept()
-    conn.send(b'[*] established.')
-    while True:
-        cmd = conn.recv(socksize).decode()
-        if cmd == key:
-            conn.send(b'[*] received.')
-            handle_signal()
-            break
-
-    conn.close()
-
-def send_signal(host, port, dkey):
-    socksize = 4096
-    try:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect((host, port))
-    except Exception as e:
-        print(f'[error] Problem connecting to node {host}:{port} - {str(e)}')
-        return
-
-    while True:
-        c = client.recv(socksize).decode()
-        if c == 'established':
-            client.sendall(dkey.encode())
-        if c == '[*] received.':
-            print('[*] Signal sent successfully.')
-            break
-
-    client.close()
-
-def daemon(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError as e:
-        print(f"[error] fork one failed: {e.errno} ({e.strerror})")
-        sys.exit(1)
-
-    os.chdir("/")
-    os.setsid()
-    os.umask(0)
-
-    try:
-        pid = os.fork()
-        if pid > 0:
-            print(f"[*] Palioxis PID: {pid}")
-            sys.exit(0)
-    except OSError as e:
-        print(f"[error] fork two failed: {e.errno} ({e.strerror})")
-        sys.exit(1)
-
-    sys.stdin = open(stdin, 'r')
-    sys.stdout = open(stdout, 'a+')
-    sys.stderr = open(stderr, 'a+')
-
-def destroy_dirs(path):
-    try:
-        for f in os.listdir(path):
-            full_path = os.path.join(path, f)
-            if os.path.isfile(full_path):
-                subprocess.run(['shred', '-n', '9', '-z', '-f', '-u', full_path], check=True)
-            elif os.path.isdir(full_path):
-                destroy_dirs(full_path)
-    except Exception as e:
-        print(f"[error] Failed to destroy files in {path}: {e}")
-
-def destroy_tc():
-    try:
-        drives = subprocess.check_output('ls /media', shell=True).decode().split('\n')
-        for d in drives:
-            if 'truecrypt' in d:
-                destroy_dirs(f'/media/{d}')
-                subprocess.run(['truecrypt', '-d'], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[error] Truecrypt destruction failed: {e}")
-    except Exception as e:
-        print(f"[error] Failed to destroy TrueCrypt volumes: {e}")
-
-def handle_signal():
-    for p in dirs:
-        destroy_dirs(p)
-    destroy_tc()
-    subprocess.run(['shutdown', '-h', 'now'], check=True)
-
-# Systemd daemon installation
-def install_daemon():
-    service_content = f"""
-[Unit]
-Description=Palioxis self-destruct server
+class PalioxisApp:
+    """Main application class for Palioxis"""
+    
+    def __init__(self):
+        """Initialize the application"""
+        self.config_manager = ConfigManager()
+        self.logger = logging.getLogger('palioxis.app')
+        self.args = None
+        
+    def parse_arguments(self):
+        """Parse command line arguments"""
+        help_text = "Palioxis: Greek personification of the backrush or retreat from battle. Linux self-destruction utility. Use with caution."
+        parser = argparse.ArgumentParser(description=help_text, prog="palioxis")
+        
+        # Main mode arguments
+        parser.add_argument('--mode', help='run as client or server', choices=['client', 'server'])
+        parser.add_argument('--config', help='path to configuration file', default=None)
+        
+        # Server specific arguments
+        parser.add_argument('--host', help='server host')
+        parser.add_argument('--port', help='server port', type=int)
+        parser.add_argument('--key', help='destruction key')
+        parser.add_argument('--daemon', help='run server as a daemon', action='store_true')
+        parser.add_argument('--install-daemon', help='install as a systemd daemon', action='store_true')
+        
+        # Client specific arguments
+        parser.add_argument('--list', help='server list [use with client mode]')
+        
+        # Destroyer module selection
+        parser.add_argument('--destroyer', help='destruction method: shred, fast, wipe, windows', 
+                           choices=['shred', 'fast', 'wipe', 'windows'])
+        
+        # Certificate management
+        parser.add_argument('--gen-certs', help='generate certificates for mTLS', action='store_true')
+        
+        # Target management
+        parser.add_argument('--add-target', help='add a directory or file to targets', metavar='PATH')
+        
+        # Other utilities
+        parser.add_argument('--log-level', help='logging level', 
+                           choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO')
+        
+        self.args = parser.parse_args()
+        return self.args
+        
+    def load_configuration(self):
+        """Load configuration from file and/or command line args"""
+        # Load config file if specified
+        if self.args.config:
+            self.config_manager.config_file = self.args.config
+            
+        self.config_manager.load_config()
+        
+        # Override config with command line arguments
+        if self.args.host:
+            self.config_manager.update('Server', 'host', self.args.host)
+            
+        if self.args.port:
+            self.config_manager.update('Server', 'port', str(self.args.port))
+            
+        if self.args.key:
+            self.config_manager.update('Server', 'key', self.args.key)
+            
+        if self.args.destroyer:
+            self.config_manager.update('Destroyer', 'module', self.args.destroyer)
+            
+        if self.args.list:
+            self.config_manager.update('Client', 'nodes_list', self.args.list)
+            
+        # Update log level if specified
+        if self.args.log_level:
+            self.config_manager.update('Daemon', 'log_level', self.args.log_level)
+            
+        return True
+        
+    def add_target_directory(self, target_path):
+        """Add a target directory or file to the configuration"""
+        if not os.path.exists(target_path):
+            self.logger.error(f"Target path does not exist: {target_path}")
+            return False
+            
+        # First try to update the config file
+        dirs = self.config_manager.get_target_directories()
+        if target_path in dirs:
+            self.logger.warning(f"Target path already in configuration: {target_path}")
+            return False
+            
+        dirs.append(target_path)
+        
+        # Get the existing directories configuration and append the new path
+        current_dirs = self.config_manager.get('Targets', 'directories', '')
+        if current_dirs:
+            # Add a newline if there are already directories configured
+            new_dirs = current_dirs + '\n    ' + target_path
+        else:
+            new_dirs = target_path
+            
+        self.config_manager.update('Targets', 'directories', new_dirs)
+        
+        # Save the updated configuration
+        success = self.config_manager.save_config()
+        if success:
+            self.logger.info(f"Added target path to configuration: {target_path}")
+        else:
+            self.logger.error(f"Failed to save configuration with new target path: {target_path}")
+            
+            # Fall back to targets.txt if config save fails
+            try:
+                with open('targets.txt', 'a') as f:
+                    f.write(f"\n{target_path}")
+                self.logger.info(f"Added target path to targets.txt: {target_path}")
+                success = True
+            except Exception as e:
+                self.logger.error(f"Failed to add target path to targets.txt: {e}")
+                success = False
+                
+        return success
+        
+    def install_daemon(self):
+        """Install Palioxis as a systemd service"""
+        settings = self.config_manager.get_server_settings()
+        daemon_settings = self.config_manager.get_daemon_settings()
+        
+        # Get the absolute path to the script
+        script_path = os.path.abspath(__file__)
+        
+        # Create the systemd service file content
+        service_content = f"""[Unit]
+Description=Palioxis self-destruct server with mTLS/DPoP security
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /path/to/palioxis.py --mode server --host {args.host} --port {args.port} --key {args.key}
+Type=simple
+ExecStart={sys.executable} {script_path} --mode server --config {self.config_manager.config_file}
 Restart=on-failure
+WorkingDirectory={os.path.dirname(script_path)}
 
 [Install]
 WantedBy=multi-user.target
 """
-    try:
-        with open('/etc/systemd/system/palioxis.service', 'w') as f:
-            f.write(service_content)
-        subprocess.run(['systemctl', 'daemon-reload'], check=True)
-        subprocess.run(['systemctl', 'enable', 'palioxis.service'], check=True)
-        print('[*] Palioxis installed as a daemon.')
-    except Exception as e:
-        print(f"[error] Failed to install Palioxis as a daemon: {e}")
-
-def add_directory_to_targets():
-    dir_to_add = input("Enter the directory or file to add to targets.txt: ").strip()
-    if dir_to_add:
+        
         try:
-            with open('targets.txt', 'a') as f:
-                f.write(f"{dir_to_add}\n")
-            print(f"[*] {dir_to_add} added to targets.txt")
+            # Write the service file
+            service_path = '/etc/systemd/system/palioxis.service'
+            with open(service_path, 'w') as f:
+                f.write(service_content)
+                
+            # Reload systemd and enable the service
+            os.system('systemctl daemon-reload')
+            os.system('systemctl enable palioxis.service')
+            
+            self.logger.info("Palioxis successfully installed as a systemd daemon")
+            print("[*] Palioxis installed as a daemon. Use 'systemctl start palioxis' to start it.")
+            return True
         except Exception as e:
-            print(f"[error] Failed to add directory: {e}")
-    else:
-        print("[error] Invalid input, no directory added.")
+            self.logger.error(f"Failed to install Palioxis as a daemon: {e}")
+            print(f"[error] Failed to install Palioxis as a daemon: {e}")
+            return False
+            
+    def generate_certificates(self):
+        """Generate certificates for mTLS communication"""
+        print("[*] Generating certificates for mTLS...")
+        
+        # Check if the certificate generation script exists
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generate_certificates.sh')
+        
+        if not os.path.exists(script_path):
+            print("[error] Certificate generation script not found.")
+            return False
+            
+        # Make the script executable
+        os.chmod(script_path, 0o755)
+        
+        # Run the script
+        result = os.system(script_path)
+        
+        if result == 0:
+            print("[*] Certificates generated successfully.")
+            return True
+        else:
+            print(f"[error] Certificate generation failed with code {result}.")
+            return False
 
-# Argument parsing
-help = """Palioxis: Greek personification of the backrush or retreat from battle. Linux self-destruction utility. Use with caution."""
-parser = argparse.ArgumentParser(description=help, prog="palioxis")
-parser.add_argument('--mode', help='run as client or server', choices=['client', 'server'])
-parser.add_argument('--host', help='server host')
-parser.add_argument('--port', help='server port', type=int)
-parser.add_argument('--key', help='destruction key')
-parser.add_argument('--list', help='server list [use with client mode]')
-parser.add_argument('--install-daemon', help='Install as a systemd daemon', action='store_true')
-args = parser.parse_args()
+    def run_server(self, daemonize=False):
+        """Start the Palioxis server"""
+        # Initialize the server
+        server = PalioxisServer(self.config_manager)
+        
+        # Run the server
+        try:
+            server.run_server(daemonize)
+            return True
+        except Exception as e:
+            self.logger.error(f"Server error: {e}")
+            traceback.print_exc()
+            return False
+    
+    def run_client(self):
+        """Run the Palioxis client to send signals to servers"""
+        client = PalioxisClient(self.config_manager)
+        
+        # Get the nodes list file path
+        nodes_list = self.args.list or self.config_manager.get('Client', 'nodes_list')
+        if not nodes_list:
+            self.logger.error("No nodes list file specified")
+            print("[error] Missing server list for client mode.")
+            print("Usage: ./palioxis.py --mode client --list /path/to/nodes.txt")
+            return False
+            
+        # Check if the file exists
+        if not os.path.exists(nodes_list):
+            self.logger.error(f"Nodes list file not found: {nodes_list}")
+            print(f"[error] Host list {nodes_list} cannot be found.")
+            return False
+            
+        # Send signals to all servers in the list
+        result = client.send_signals_from_file(nodes_list)
+        
+        # Print the results
+        print(f"\n[*] {result['message']}")
+        for node_result in result['results']:
+            status = "SUCCESS" if node_result['success'] else "FAILED"
+            print(f"[{status}] {node_result['host']}:{node_result['port']} - {node_result['message']}")
+            
+        return result['success']
+    
+    def interactive_mode(self):
+        """Interactive mode when no arguments are provided"""
+        print("[*] No arguments provided. Entering interactive mode.")
+        print("[*] What would you like to do?")
+        print("    1. Run as server")
+        print("    2. Run as client")
+        print("    3. Add a directory to targets")
+        print("    4. Generate certificates for mTLS")
+        print("    5. Exit")
+        
+        choice = input("Enter your choice (1-5): ").strip()
+        
+        if choice == '1':
+            print("\nServer mode requires the following information:")
+            host = input("Host to bind to (default: 0.0.0.0): ").strip() or '0.0.0.0'
+            port = input("Port to listen on (default: 8443): ").strip() or '8443'
+            key = input("Self-destruct key: ").strip()
+            destroyer = input("Destroyer module (shred, fast, wipe, windows) (default: shred): ").strip() or 'shred'
+            
+            if not key:
+                print("[error] Self-destruct key is required.")
+                return False
+                
+            self.config_manager.update('Server', 'host', host)
+            self.config_manager.update('Server', 'port', port)
+            self.config_manager.update('Server', 'key', key)
+            self.config_manager.update('Destroyer', 'module', destroyer)
+            self.config_manager.save_config()
+            
+            # Create args object for compatibility
+            class Args:
+                pass
+            self.args = Args()
+            self.args.mode = 'server'
+            self.args.daemon = False
+            
+            return self.run_server(False)
+        elif choice == '2':
+            nodes_list = input("Path to nodes list file: ").strip()
+            if not nodes_list:
+                print("[error] Nodes list file path is required.")
+                return False
+                
+            self.config_manager.update('Client', 'nodes_list', nodes_list)
+            self.config_manager.save_config()
+            
+            # Create args object for compatibility
+            class Args:
+                pass
+            self.args = Args()
+            self.args.mode = 'client'
+            self.args.list = nodes_list
+            
+            return self.run_client()
+        elif choice == '3':
+            target_path = input("Enter the directory or file to add to targets: ").strip()
+            if not target_path:
+                print("[error] No directory or file specified.")
+                return False
+                
+            return self.add_target_directory(target_path)
+        elif choice == '4':
+            return self.generate_certificates()
+        elif choice == '5':
+            print("[*] Exiting.")
+            return True
+        else:
+            print("[error] Invalid choice.")
+            return False
+    
+    def run(self):
+        """Main entry point for the application"""
+        # Parse command line arguments
+        self.parse_arguments()
+        
+        # Handle special cases that don't require configuration
+        if self.args.gen_certs:
+            return self.generate_certificates()
+            
+        # Load configuration
+        self.load_configuration()
+        
+        # Set up logging
+        daemon_settings = self.config_manager.get_daemon_settings()
+        log_level = self.args.log_level or daemon_settings['log_level']
+        log_file = daemon_settings['log_file'] if self.args.daemon else None
+        setup_logging(log_level, log_file)
+        
+        # Handle target directory addition
+        if self.args.add_target:
+            return self.add_target_directory(self.args.add_target)
+            
+        # Install as daemon if requested
+        if self.args.install_daemon:
+            return self.install_daemon()
+            
+        # If no mode provided, enter interactive mode
+        if not self.args.mode and len(sys.argv) == 1:
+            return self.interactive_mode()
+            
+        # Run in the specified mode
+        if self.args.mode == 'server':
+            return self.run_server(self.args.daemon)
+        elif self.args.mode == 'client':
+            return self.run_client()
+        else:
+            print("[error] No valid mode specified. Use --mode server or --mode client")
+            return False
 
-# If no arguments provided, ask what the user wants to do
-if len(sys.argv) == 1:
-    print("[*] No arguments provided.")
-    action = input("Do you want to run as (1) server, (2) client, or (3) add a new directory to targets.txt? (Enter 1, 2, or 3): ").strip()
 
-    if action == '1':
-        print("Usage: ./palioxis.py --mode server --host <host> --port <port> --key <key>")
+def main():
+    """Main entry point"""
+    app = PalioxisApp()
+    try:
+        success = app.run()
+        sys.exit(0 if success else 1)
+    except Exception as e:
+        print(f"[error] {e}")
+        traceback.print_exc()
         sys.exit(1)
-    elif action == '2':
-        print("Usage: ./palioxis.py --mode client --list /path/to/nodes.txt")
-        sys.exit(1)
-    elif action == '3':
-        add_directory_to_targets()
-        sys.exit(0)
-    else:
-        print("[error] Invalid selection.")
-        sys.exit(1)
-
-# Daemon installation
-if args.install_daemon and args.mode == 'server':
-    install_daemon()
-    sys.exit(0)
-
-# Running the appropriate mode
-mode = args.mode
-key = args.key
-
-if mode == 'server':
-    if not args.host or not args.port or not args.key:
-        print("[error] Missing required arguments for server mode.")
-        print("Usage: ./palioxis.py --mode server --host <host> --port <port> --key <key>")
-        sys.exit(1)
-    start_server(args.host, args.port)
-
-elif mode == 'client':
-    if not args.list:
-        print("[error] Missing server list for client mode.")
-        print("Usage: ./palioxis.py --mode client --list /path/to/nodes.txt")
-        sys.exit(1)
-    if os.path.exists(args.list):
-        with open(args.list, 'r') as fin:
-            for line in fin.readlines():
-                if line.strip():
-                    try:
-                        entry = line.strip().split(' ')
-                        print(f'[*] Attempting to signal {entry[0]}:{entry[1]}')
-                        send_signal(entry[0], int(entry[1]), entry[2])
-                    except Exception as e:
-                        print(f'[error] {str(e)}')
-                        continue
-    else:
-        print(f'[error] Host list {args.list} cannot be found.')
+        
+        
+if __name__ == "__main__":
+    main()
